@@ -8,7 +8,7 @@
 # The latest version of this script is available at:
 # https://github.com/hwdsl2/setup-ipsec-vpn
 #
-# Copyright (C) 2014-2018 Lin Song <linsongui@gmail.com>
+# Copyright (C) 2014-2019 Lin Song <linsongui@gmail.com>
 # Based on the work of Thomas Sarlandie (Copyright 2012)
 #
 # This work is licensed under the Creative Commons Attribution-ShareAlike 3.0
@@ -34,7 +34,7 @@ YOUR_PASSWORD=''
 # =====================================================
 
 export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-SYS_DT="$(date +%F-%T)"
+SYS_DT=$(date +%F-%T)
 
 exiterr()  { echo "Error: $1" >&2; exit 1; }
 exiterr2() { exiterr "'apt-get install' failed."; }
@@ -48,10 +48,10 @@ check_ip() {
 
 vpnsetup() {
 
-os_type="$(lsb_release -si 2>/dev/null)"
+os_type=$(lsb_release -si 2>/dev/null)
 if [ -z "$os_type" ]; then
-  [ -f /etc/os-release  ] && os_type="$(. /etc/os-release  && echo "$ID")"
-  [ -f /etc/lsb-release ] && os_type="$(. /etc/lsb-release && echo "$DISTRIB_ID")"
+  [ -f /etc/os-release  ] && os_type=$(. /etc/os-release  && printf '%s' "$ID")
+  [ -f /etc/lsb-release ] && os_type=$(. /etc/lsb-release && printf '%s' "$DISTRIB_ID")
 fi
 if ! printf '%s' "$os_type" | head -n 1 | grep -qiF -e ubuntu -e debian -e raspbian; then
   exiterr "This script only supports Ubuntu and Debian."
@@ -69,10 +69,8 @@ if [ "$(id -u)" != 0 ]; then
   exiterr "Script must be run as root. Try 'sudo sh $0'"
 fi
 
-net_iface=${VPN_NET_IFACE:-'eth0'}
-def_iface="$(route 2>/dev/null | grep '^default' | grep -o '[^ ]*$')"
-[ -z "$def_iface" ] && def_iface="$(ip -4 route list 0/0 2>/dev/null | grep -Po '(?<=dev )(\S+)')"
-
+def_iface=$(route 2>/dev/null | grep -m 1 '^default' | grep -o '[^ ]*$')
+[ -z "$def_iface" ] && def_iface=$(ip -4 route list 0/0 2>/dev/null | grep -m 1 -Po '(?<=dev )(\S+)')
 def_state=$(cat "/sys/class/net/$def_iface/operstate" 2>/dev/null)
 if [ -n "$def_state" ] && [ "$def_state" != "down" ]; then
   if ! uname -m | grep -qi '^arm'; then
@@ -82,19 +80,13 @@ if [ -n "$def_state" ] && [ "$def_state" != "down" ]; then
         ;;
     esac
   fi
-  net_iface="$def_iface"
-fi
-
-net_state=$(cat "/sys/class/net/$net_iface/operstate" 2>/dev/null)
-if [ -z "$net_state" ] || [ "$net_state" = "down" ] || [ "$net_iface" = "lo" ]; then
-  printf "Error: Network interface '%s' is not available.\n" "$net_iface" >&2
-  if [ -z "$VPN_NET_IFACE" ]; then
-cat 1>&2 <<EOF
-Could not detect the default network interface. Re-run this script with:
-  sudo VPN_NET_IFACE="default_interface_name" sh "$0"
-EOF
+  NET_IFACE="$def_iface"
+else
+  eth0_state=$(cat "/sys/class/net/eth0/operstate" 2>/dev/null)
+  if [ -z "$eth0_state" ] || [ "$eth0_state" = "down" ]; then
+    exiterr "Could not detect the default network interface."
   fi
-  exit 1
+  NET_IFACE=eth0
 fi
 
 [ -n "$YOUR_IPSEC_PSK" ] && VPN_IPSEC_PSK="$YOUR_IPSEC_PSK"
@@ -103,9 +95,9 @@ fi
 
 if [ -z "$VPN_IPSEC_PSK" ] && [ -z "$VPN_USER" ] && [ -z "$VPN_PASSWORD" ]; then
   bigecho "VPN credentials not set by user. Generating random PSK and password..."
-  VPN_IPSEC_PSK="$(LC_CTYPE=C tr -dc 'A-HJ-NPR-Za-km-z2-9' < /dev/urandom | head -c 16)"
+  VPN_IPSEC_PSK=$(LC_CTYPE=C tr -dc 'A-HJ-NPR-Za-km-z2-9' < /dev/urandom | head -c 20)
   VPN_USER=vpnuser
-  VPN_PASSWORD="$(LC_CTYPE=C tr -dc 'A-HJ-NPR-Za-km-z2-9' < /dev/urandom | head -c 16)"
+  VPN_PASSWORD=$(LC_CTYPE=C tr -dc 'A-HJ-NPR-Za-km-z2-9' < /dev/urandom | head -c 16)
 fi
 
 if [ -z "$VPN_IPSEC_PSK" ] || [ -z "$VPN_USER" ] || [ -z "$VPN_PASSWORD" ]; then
@@ -172,31 +164,13 @@ apt-get -yq install libnss3-dev libnspr4-dev pkg-config \
   libcurl4-nss-dev flex bison gcc make libnss3-tools \
   libevent-dev ppp xl2tpd || exiterr2
 
-case "$(uname -r)" in
-  4.14*|4.15*)
-    L2TP_VER=1.3.12
-    l2tp_file="xl2tpd-$L2TP_VER.tar.gz"
-    l2tp_url1="https://github.com/xelerance/xl2tpd/archive/v$L2TP_VER.tar.gz"
-    l2tp_url2="https://mirrors.kernel.org/ubuntu/pool/universe/x/xl2tpd/xl2tpd_$L2TP_VER.orig.tar.gz"
-    apt-get -yq install libpcap0.8-dev || exiterr2
-    if ! { wget -t 3 -T 30 -nv -O "$l2tp_file" "$l2tp_url1" || wget -t 3 -T 30 -nv -O "$l2tp_file" "$l2tp_url2"; }; then
-      exit 1
-    fi
-    /bin/rm -rf "/opt/src/xl2tpd-$L2TP_VER"
-    tar xzf "$l2tp_file" && /bin/rm -f "$l2tp_file"
-    cd "xl2tpd-$L2TP_VER" && make -s 2>/dev/null && PREFIX=/usr make -s install
-    cd /opt/src || exit 1
-    /bin/rm -rf "/opt/src/xl2tpd-$L2TP_VER"
-    ;;
-esac
-
 bigecho "Installing Fail2Ban to protect SSH..."
 
 apt-get -yq install fail2ban || exiterr2
 
 bigecho "Compiling and installing Libreswan..."
 
-SWAN_VER=3.22
+SWAN_VER=3.29
 swan_file="libreswan-$SWAN_VER.tar.gz"
 swan_url1="https://github.com/libreswan/libreswan/archive/v$SWAN_VER.tar.gz"
 swan_url2="https://download.libreswan.org/$swan_file"
@@ -206,15 +180,18 @@ fi
 /bin/rm -rf "/opt/src/libreswan-$SWAN_VER"
 tar xzf "$swan_file" && /bin/rm -f "$swan_file"
 cd "libreswan-$SWAN_VER" || exit 1
-sed -i '/^#define LSWBUF_CANARY/s/-2$/((char) -2)/' include/lswlog.h
 cat > Makefile.inc.local <<'EOF'
 WERROR_CFLAGS =
 USE_DNSSEC = false
+USE_DH31 = false
+USE_NSS_AVA_COPY = true
+USE_NSS_IPSEC_PROFILE = false
+USE_GLIBC_KERN_FLIP_HEADERS = true
 EOF
 if [ "$(packaging/utils/lswan_detect.sh init)" = "systemd" ]; then
   apt-get -yq install libsystemd-dev || exiterr2
 fi
-NPROCS="$(grep -c ^processor /proc/cpuinfo)"
+NPROCS=$(grep -c ^processor /proc/cpuinfo)
 [ -z "$NPROCS" ] && NPROCS=1
 make "-j$((NPROCS+1))" -s base && make -s install-base
 
@@ -233,6 +210,8 @@ XAUTH_NET=${VPN_XAUTH_NET:-'192.168.43.0/24'}
 XAUTH_POOL=${VPN_XAUTH_POOL:-'192.168.43.10-192.168.43.250'}
 DNS_SRV1=${VPN_DNS_SRV1:-'8.8.8.8'}
 DNS_SRV2=${VPN_DNS_SRV2:-'8.8.4.4'}
+DNS_SRVS="\"$DNS_SRV1 $DNS_SRV2\""
+[ -n "$VPN_DNS_SRV1" ] && [ -z "$VPN_DNS_SRV2" ] && DNS_SRVS="$DNS_SRV1"
 
 # Create IPsec config
 conf_bk "/etc/ipsec.conf"
@@ -257,8 +236,9 @@ conn shared
   dpddelay=30
   dpdtimeout=120
   dpdaction=clear
-  ike=3des-sha1,3des-sha2,aes-sha1,aes-sha1;modp1024,aes-sha2,aes-sha2;modp1024
-  phase2alg=3des-sha1,3des-sha2,aes-sha1,aes-sha2,aes256-sha2_512
+  ikev2=never
+  ike=aes256-sha2,aes128-sha2,aes256-sha1,aes128-sha1,aes256-sha2;modp1024,aes128-sha1;modp1024
+  phase2alg=aes_gcm-null,aes128-sha1,aes256-sha1,aes256-sha2_512,aes128-sha2,aes256-sha2
   sha2-truncbug=yes
 
 conn l2tp-psk
@@ -273,8 +253,7 @@ conn xauth-psk
   auto=add
   leftsubnet=0.0.0.0/0
   rightaddresspool=$XAUTH_POOL
-  modecfgdns1=$DNS_SRV1
-  modecfgdns2=$DNS_SRV2
+  modecfgdns=$DNS_SRVS
   leftxauthserver=yes
   rightxauthclient=yes
   leftmodecfgserver=yes
@@ -282,15 +261,9 @@ conn xauth-psk
   modecfgpull=yes
   xauthby=file
   ike-frag=yes
-  ikev2=never
   cisco-unity=yes
   also=shared
 EOF
-
-if ip -4 route list 0/0 2>/dev/null | grep -qs ' src '; then
-  PRIVATE_IP=$(ip -4 route get 1 | sed 's/ uid .*//' | awk '{print $NF;exit}')
-  check_ip "$PRIVATE_IP" && sed -i "s/left=%defaultroute/left=$PRIVATE_IP/" /etc/ipsec.conf
-fi
 
 if uname -m | grep -qi '^arm'; then
   sed -i '/phase2alg/s/,aes256-sha2_512//' /etc/ipsec.conf
@@ -325,8 +298,6 @@ cat > /etc/ppp/options.xl2tpd <<EOF
 +mschap-v2
 ipcp-accept-local
 ipcp-accept-remote
-ms-dns $DNS_SRV1
-ms-dns $DNS_SRV2
 noccp
 auth
 mtu 1280
@@ -335,7 +306,14 @@ proxyarp
 lcp-echo-failure 4
 lcp-echo-interval 30
 connect-delay 5000
+ms-dns $DNS_SRV1
 EOF
+
+if [ -z "$VPN_DNS_SRV1" ] || [ -n "$VPN_DNS_SRV2" ]; then
+cat >> /etc/ppp/options.xl2tpd <<EOF
+ms-dns $DNS_SRV2
+EOF
+fi
 
 # Create VPN credentials
 conf_bk "/etc/ppp/chap-secrets"
@@ -377,8 +355,8 @@ net.ipv4.conf.default.accept_source_route = 0
 net.ipv4.conf.default.accept_redirects = 0
 net.ipv4.conf.default.send_redirects = 0
 net.ipv4.conf.default.rp_filter = 0
-net.ipv4.conf.$net_iface.send_redirects = 0
-net.ipv4.conf.$net_iface.rp_filter = 0
+net.ipv4.conf.$NET_IFACE.send_redirects = 0
+net.ipv4.conf.$NET_IFACE.rp_filter = 0
 
 net.core.wmem_max = 12582912
 net.core.rmem_max = 12582912
@@ -392,9 +370,10 @@ bigecho "Updating IPTables rules..."
 # Check if rules need updating
 ipt_flag=0
 IPT_FILE="/etc/iptables.rules"
+IPT_FILE2="/etc/iptables/rules.v4"
 if ! grep -qs "hwdsl2 VPN script" "$IPT_FILE" \
-   || ! iptables -t nat -C POSTROUTING -s "$L2TP_NET" -o "$net_iface" -j MASQUERADE 2>/dev/null \
-   || ! iptables -t nat -C POSTROUTING -s "$XAUTH_NET" -o "$net_iface" -m policy --dir out --pol none -j MASQUERADE 2>/dev/null; then
+   || ! iptables -t nat -C POSTROUTING -s "$L2TP_NET" -o "$NET_IFACE" -j MASQUERADE 2>/dev/null \
+   || ! iptables -t nat -C POSTROUTING -s "$XAUTH_NET" -o "$NET_IFACE" -m policy --dir out --pol none -j MASQUERADE 2>/dev/null; then
   ipt_flag=1
 fi
 
@@ -409,21 +388,20 @@ if [ "$ipt_flag" = "1" ]; then
   iptables -I INPUT 5 -p udp --dport 1701 -m policy --dir in --pol ipsec -j ACCEPT
   iptables -I INPUT 6 -p udp --dport 1701 -j DROP
   iptables -I FORWARD 1 -m conntrack --ctstate INVALID -j DROP
-  iptables -I FORWARD 2 -i "$net_iface" -o ppp+ -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-  iptables -I FORWARD 3 -i ppp+ -o "$net_iface" -j ACCEPT
+  iptables -I FORWARD 2 -i "$NET_IFACE" -o ppp+ -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+  iptables -I FORWARD 3 -i ppp+ -o "$NET_IFACE" -j ACCEPT
   iptables -I FORWARD 4 -i ppp+ -o ppp+ -s "$L2TP_NET" -d "$L2TP_NET" -j ACCEPT
-  iptables -I FORWARD 5 -i "$net_iface" -d "$XAUTH_NET" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
-  iptables -I FORWARD 6 -s "$XAUTH_NET" -o "$net_iface" -j ACCEPT
+  iptables -I FORWARD 5 -i "$NET_IFACE" -d "$XAUTH_NET" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+  iptables -I FORWARD 6 -s "$XAUTH_NET" -o "$NET_IFACE" -j ACCEPT
   # Uncomment if you wish to disallow traffic between VPN clients themselves
   # iptables -I FORWARD 2 -i ppp+ -o ppp+ -s "$L2TP_NET" -d "$L2TP_NET" -j DROP
   # iptables -I FORWARD 3 -s "$XAUTH_NET" -d "$XAUTH_NET" -j DROP
   iptables -A FORWARD -j DROP
-  iptables -t nat -I POSTROUTING -s "$XAUTH_NET" -o "$net_iface" -m policy --dir out --pol none -j MASQUERADE
-  iptables -t nat -I POSTROUTING -s "$L2TP_NET" -o "$net_iface" -j MASQUERADE
+  iptables -t nat -I POSTROUTING -s "$XAUTH_NET" -o "$NET_IFACE" -m policy --dir out --pol none -j MASQUERADE
+  iptables -t nat -I POSTROUTING -s "$L2TP_NET" -o "$NET_IFACE" -j MASQUERADE
   echo "# Modified by hwdsl2 VPN script" > "$IPT_FILE"
   iptables-save >> "$IPT_FILE"
 
-  IPT_FILE2="/etc/iptables/rules.v4"
   if [ -f "$IPT_FILE2" ]; then
     conf_bk "$IPT_FILE2"
     /bin/cp -f "$IPT_FILE" "$IPT_FILE2"
@@ -432,17 +410,52 @@ fi
 
 bigecho "Enabling services on boot..."
 
-mkdir -p /etc/network/if-pre-up.d
+# Check for iptables-persistent
+IPT_PST="/etc/init.d/iptables-persistent"
+IPT_PST2="/usr/share/netfilter-persistent/plugins.d/15-ip4tables"
+ipt_load=1
+if [ -f "$IPT_FILE2" ] && { [ -f "$IPT_PST" ] || [ -f "$IPT_PST2" ]; }; then
+  ipt_load=0
+fi
+
+if [ "$ipt_load" = "1" ]; then
+  mkdir -p /etc/network/if-pre-up.d
 cat > /etc/network/if-pre-up.d/iptablesload <<'EOF'
 #!/bin/sh
 iptables-restore < /etc/iptables.rules
 exit 0
 EOF
+  chmod +x /etc/network/if-pre-up.d/iptablesload
+
+  if [ -f /usr/sbin/netplan ]; then
+    mkdir -p /etc/systemd/system
+cat > /etc/systemd/system/load-iptables-rules.service <<'EOF'
+[Unit]
+Description = Load /etc/iptables.rules
+DefaultDependencies=no
+
+Before=network-pre.target
+Wants=network-pre.target
+
+Wants=systemd-modules-load.service local-fs.target
+After=systemd-modules-load.service local-fs.target
+
+[Service]
+Type=oneshot
+ExecStart=/etc/network/if-pre-up.d/iptablesload
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    systemctl enable load-iptables-rules 2>/dev/null
+  fi
+fi
 
 for svc in fail2ban ipsec xl2tpd; do
   update-rc.d "$svc" enable >/dev/null 2>&1
   systemctl enable "$svc" 2>/dev/null
 done
+
 if ! grep -qs "hwdsl2 VPN script" /etc/rc.local; then
   if [ -f /etc/rc.local ]; then
     conf_bk "/etc/rc.local"
@@ -456,7 +469,6 @@ cat >> /etc/rc.local <<'EOF'
 (sleep 15
 service ipsec restart
 service xl2tpd restart
-[ -f "/usr/sbin/netplan" ] && { iptables-restore < /etc/iptables.rules; service fail2ban restart; }
 echo 1 > /proc/sys/net/ipv4/ip_forward)&
 exit 0
 EOF
@@ -468,7 +480,7 @@ bigecho "Starting services..."
 sysctl -e -q -p
 
 # Update file attributes
-chmod +x /etc/rc.local /etc/network/if-pre-up.d/iptablesload
+chmod +x /etc/rc.local
 chmod 600 /etc/ipsec.secrets* /etc/ppp/chap-secrets* /etc/ipsec.d/passwd*
 
 # Apply new IPTables rules
